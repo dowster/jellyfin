@@ -67,7 +67,7 @@ namespace MediaBrowser.Controller.MediaEncoding
             long? bytesTranscoded = null;
             int? bitRate = null;
 
-            var parts = line.Split(' ');
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
             var totalMs = state.RunTimeTicks.HasValue
                 ? TimeSpan.FromTicks(state.RunTimeTicks.Value).TotalMilliseconds
@@ -98,6 +98,20 @@ namespace MediaBrowser.Controller.MediaEncoding
                     if (float.TryParse(rate, CultureInfo.InvariantCulture, out var val))
                     {
                         framerate = val;
+                    }
+                }
+                else if (part.StartsWith("speed=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var speed = part[6..];
+                    if (speed.Length == 0 && i + 1 < parts.Length)
+                    {
+                        speed = parts[i + 1];
+                    }
+
+                    if (double.TryParse(speed.TrimEnd('x'), CultureInfo.InvariantCulture, out var value)
+                        && double.IsFinite(value) && value >= 0)
+                    {
+                        state.TranscodingSpeed = value;
                     }
                 }
                 else if (state.RunTimeTicks.HasValue &&

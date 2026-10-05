@@ -39,6 +39,11 @@ public class TranscodingThrottler : IDisposable
     }
 
     /// <summary>
+    /// Gets a value indicating whether the transcoder is paused by throttling.
+    /// </summary>
+    public bool IsPaused => _isPaused;
+
+    /// <summary>
     /// Start timer.
     /// </summary>
     public void Start()

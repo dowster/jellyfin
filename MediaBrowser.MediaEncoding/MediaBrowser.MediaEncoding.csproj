@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <PackageReference Include="AsyncKeyedLock" />
+    <PackageReference Include="prometheus-net" />
     <PackageReference Include="BDInfo" />
     <PackageReference Include="libse" />
     <PackageReference Include="Microsoft.Extensions.Http" />

@@ -516,6 +516,11 @@ namespace MediaBrowser.Controller.MediaEncoding
         public int HlsListSize => 0;
 
         /// <summary>
+        /// Gets or sets the latest FFmpeg processing speed relative to real time.
+        /// </summary>
+        public double? TranscodingSpeed { get; set; }
+
+        /// <summary>
         /// Adds the specified reason(s) to <see cref="TranscodeReasons"/>.
         /// </summary>
         /// <param name="reason">The transcode reason(s) to add.</param>

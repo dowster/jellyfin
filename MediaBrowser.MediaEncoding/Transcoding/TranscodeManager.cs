@@ -33,6 +33,8 @@ namespace MediaBrowser.MediaEncoding.Transcoding;
 /// <inheritdoc cref="ITranscodeManager"/>
 public sealed class TranscodeManager : ITranscodeManager, IDisposable
 {
+    private static readonly TranscodingMetrics _metrics = new();
+
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<TranscodeManager> _logger;
     private readonly IFileSystem _fileSystem;
@@ -217,6 +219,7 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
 
     private async Task KillTranscodingJob(TranscodingJob job, bool closeLiveStream, Func<string, bool> delete)
     {
+        _metrics.Stop(job);
         job.DisposeKillTimer();
 
         _logger.LogDebug("KillTranscodingJob - JobId {0} PlaySessionId {1}. Killing transcoding", job.Id, job.PlaySessionId);
@@ -338,6 +341,11 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
             job.TranscodingPositionTicks = ticks;
             job.BytesTranscoded = bytesTranscoded;
             job.BitRate = bitRate;
+        }
+
+        if (job is not null)
+        {
+            _metrics.Progress(job, transcodingPosition?.Ticks, framerate, state.TranscodingSpeed);
         }
 
         var deviceId = state.Request.DeviceId;
@@ -487,12 +495,14 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
 
         process.Exited += (_, _) => OnFfMpegProcessExited(process, transcodingJob, state);
 
+        _metrics.Start(transcodingJob, commandLineArguments, state.IsInputVideo, _serverConfigurationManager.GetEncodingOptions().HardwareAccelerationType);
         try
         {
             process.Start();
         }
         catch (Exception ex)
         {
+            _metrics.Finish(transcodingJob, true, false);
             _logger.LogError(ex, "Error starting FFmpeg");
             OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
 
@@ -640,6 +650,7 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
 
     private void OnFfMpegProcessExited(Process process, TranscodingJob job, StreamState state)
     {
+        _metrics.Finish(job, false, process.ExitCode != 0, job.CancellationTokenSource?.IsCancellationRequested == true);
         job.HasExited = true;
         job.ExitCode = process.ExitCode;
 
@@ -711,6 +722,7 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
     {
         if (!string.IsNullOrWhiteSpace(e.PlaySessionId))
         {
+            _metrics.Playback(e.PlaySessionId, e.PlaybackPositionTicks);
             PingTranscodingJob(e.PlaySessionId, e.IsPaused);
         }
     }
@@ -753,6 +765,14 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
     {
         _sessionManager.PlaybackProgress -= OnPlaybackProgress;
         _sessionManager.PlaybackStart -= OnPlaybackProgress;
+        lock (_activeTranscodingJobs)
+        {
+            foreach (var job in _activeTranscodingJobs)
+            {
+                _metrics.Stop(job);
+            }
+        }
+
         _transcodingLocks.Dispose();
     }
 }
