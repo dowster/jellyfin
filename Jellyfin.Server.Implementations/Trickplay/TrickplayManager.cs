@@ -42,6 +42,7 @@ public partial class TrickplayManager : ITrickplayManager
     private readonly IApplicationPaths _appPaths;
     private readonly IPathManager _pathManager;
 
+    private static readonly TrickplayMetrics _metrics = new();
     private static readonly AsyncNonKeyedLocker _resourcePool = new(1);
     private static readonly string[] _trickplayImgExtensions = [".jpg"];
 
@@ -391,8 +392,10 @@ public partial class TrickplayManager : ITrickplayManager
     {
         var imgTempDir = string.Empty;
 
+        using var job = _metrics.QueueJob();
         using (await _resourcePool.LockAsync(cancellationToken).ConfigureAwait(false))
         {
+            job.Acquired();
             try
             {
                 // Extract images
@@ -479,6 +482,8 @@ public partial class TrickplayManager : ITrickplayManager
                 var mediaStream = mediaSource.VideoStream;
                 var container = mediaSource.Container;
 
+                job.Start();
+
                 // Checks for write permission before generating images
                 if (saveWithMedia)
                 {
@@ -525,12 +530,17 @@ public partial class TrickplayManager : ITrickplayManager
                         trickplayInfo.ItemId = video.Id;
                         await SaveTrickplayInfo(trickplayInfo).ConfigureAwait(false);
 
+                        job.Complete();
                         _logger.LogInformation("Finished creation of trickplay files for {0}", mediaPath);
                     }
                     else
                     {
                         throw new InvalidOperationException("Null trickplay tiles info from CreateTiles.");
                     }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -540,6 +550,11 @@ public partial class TrickplayManager : ITrickplayManager
                     // if tiles info wasn't saved.
                     outputDir.Delete(true);
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                job.Cancel();
+                throw;
             }
             catch (Exception ex)
             {
