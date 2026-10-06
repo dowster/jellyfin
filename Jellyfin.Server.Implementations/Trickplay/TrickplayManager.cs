@@ -30,7 +30,7 @@ namespace Jellyfin.Server.Implementations.Trickplay;
 /// <summary>
 /// ITrickplayManager implementation.
 /// </summary>
-public partial class TrickplayManager : ITrickplayManager
+public partial class TrickplayManager : ITrickplayManager, IDisposable
 {
     private readonly ILogger<TrickplayManager> _logger;
     private readonly IMediaEncoder _mediaEncoder;
@@ -43,7 +43,8 @@ public partial class TrickplayManager : ITrickplayManager
     private readonly IPathManager _pathManager;
 
     private static readonly TrickplayMetrics _metrics = new();
-    private static readonly AsyncNonKeyedLocker _resourcePool = new(1);
+    private readonly TrickplayJobLimiter _resourcePool;
+    private readonly AsyncKeyedLocker<Guid> _itemLocks = new();
     private static readonly string[] _trickplayImgExtensions = [".jpg"];
 
     /// <summary>
@@ -78,6 +79,14 @@ public partial class TrickplayManager : ITrickplayManager
         _dbProvider = dbProvider;
         _appPaths = appPaths;
         _pathManager = pathManager;
+        _resourcePool = new TrickplayJobLimiter(() => _config.Configuration.TrickplayOptions.MaxConcurrentJobs);
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
     }
 
     /// <inheritdoc />
@@ -282,6 +291,8 @@ public partial class TrickplayManager : ITrickplayManager
     /// <inheritdoc />
     public async Task RefreshTrickplayDataAsync(Video video, bool replace, LibraryOptions libraryOptions, CancellationToken cancellationToken)
     {
+        // Discovery, replacement and pruning must not race another refresh of this video.
+        using var itemLock = await _itemLocks.LockAsync(video.Id, cancellationToken).ConfigureAwait(false);
         var options = _config.Configuration.TrickplayOptions;
         if (!CanGenerateTrickplay(video, options.Interval) || libraryOptions is null)
         {
@@ -898,6 +909,18 @@ public partial class TrickplayManager : ITrickplayManager
             tileHeight.ToString(CultureInfo.InvariantCulture));
 
         return Path.Combine(path, subdirectory);
+    }
+
+    /// <summary>
+    /// Releases the per-item refresh locks.
+    /// </summary>
+    /// <param name="disposing">Whether managed resources should be released.</param>
+    protected virtual void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _itemLocks.Dispose();
+        }
     }
 
     [GeneratedRegex(@"^(\d+) - (\d+)x(\d+)$")]

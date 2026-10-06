@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+using System;
 using System.Diagnostics;
 
 namespace MediaBrowser.Model.Configuration;
@@ -8,6 +8,18 @@ namespace MediaBrowser.Model.Configuration;
 /// </summary>
 public class TrickplayOptions
 {
+    private int _maxConcurrentJobs = 1;
+
+    /// <summary>
+    /// Gets or sets the maximum number of concurrent trickplay generation jobs, from 1 to 32.
+    /// The scheduled task reads this limit when it starts. FFmpeg threads are configured separately.
+    /// </summary>
+    public int MaxConcurrentJobs
+    {
+        get => _maxConcurrentJobs;
+        set => _maxConcurrentJobs = Math.Clamp(value, 1, 32);
+    }
+
     /// <summary>
     /// Gets or sets a value indicating whether or not to use HW acceleration.
     /// </summary>
