@@ -1054,6 +1054,14 @@ namespace MediaBrowser.MediaEncoding.Encoder
                 EnableRaisingEvents = true
             };
 
+            return await RunTrickplayProcessAsync(process, targetDirectory, priority, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Runs interval image extraction under the caller's trickplay generation limit.
+        /// </summary>
+        internal async Task<string> RunTrickplayProcessAsync(Process process, string targetDirectory, ProcessPriorityClass? priority, CancellationToken cancellationToken)
+        {
             var processDescription = string.Format(CultureInfo.InvariantCulture, "{0} {1}", process.StartInfo.FileName, process.StartInfo.Arguments);
             _logger.LogInformation("Trickplay generation: {ProcessDescription}", processDescription);
 
@@ -1061,62 +1069,60 @@ namespace MediaBrowser.MediaEncoding.Encoder
             {
                 bool ranToCompletion = false;
 
-                using (await _thumbnailResourcePool.LockAsync(cancellationToken).ConfigureAwait(false))
+                // TrickplayManager owns the generation limit; the thumbnail pool is for single-image extraction.
+                StartProcess(processWrapper);
+
+                // Set process priority
+                if (priority.HasValue)
                 {
-                    StartProcess(processWrapper);
-
-                    // Set process priority
-                    if (priority.HasValue)
+                    try
                     {
-                        try
-                        {
-                            processWrapper.Process.PriorityClass = priority.Value;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogDebug(ex, "Unable to set process priority to {Priority} for {Description}", priority.Value, processDescription);
-                        }
+                        processWrapper.Process.PriorityClass = priority.Value;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Unable to set process priority to {Priority} for {Description}", priority.Value, processDescription);
+                    }
+                }
+
+                // Need to give ffmpeg enough time to make all the thumbnails, which could be a while,
+                // but we still need to detect if the process hangs.
+                // Making the assumption that as long as new jpegs are showing up, everything is good.
+
+                bool isResponsive = true;
+                int lastCount = 0;
+                var timeoutMs = _configurationManager.Configuration.ImageExtractionTimeoutMs;
+                timeoutMs = timeoutMs <= 0 ? DefaultHdrImageExtractionTimeout : timeoutMs;
+
+                while (isResponsive && !cancellationToken.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await process.WaitForExitAsync(TimeSpan.FromMilliseconds(timeoutMs)).ConfigureAwait(false);
+
+                        ranToCompletion = true;
+                        break;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // We don't actually expect the process to be finished in one timeout span, just that one image has been generated.
                     }
 
-                    // Need to give ffmpeg enough time to make all the thumbnails, which could be a while,
-                    // but we still need to detect if the process hangs.
-                    // Making the assumption that as long as new jpegs are showing up, everything is good.
+                    var jpegCount = _fileSystem.GetFilePaths(targetDirectory).Count();
 
-                    bool isResponsive = true;
-                    int lastCount = 0;
-                    var timeoutMs = _configurationManager.Configuration.ImageExtractionTimeoutMs;
-                    timeoutMs = timeoutMs <= 0 ? DefaultHdrImageExtractionTimeout : timeoutMs;
+                    isResponsive = jpegCount > lastCount;
+                    lastCount = jpegCount;
+                }
 
-                    while (isResponsive && !cancellationToken.IsCancellationRequested)
+                if (!ranToCompletion)
+                {
+                    if (!isResponsive)
                     {
-                        try
-                        {
-                            await process.WaitForExitAsync(TimeSpan.FromMilliseconds(timeoutMs)).ConfigureAwait(false);
-
-                            ranToCompletion = true;
-                            break;
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            // We don't actually expect the process to be finished in one timeout span, just that one image has been generated.
-                        }
-
-                        var jpegCount = _fileSystem.GetFilePaths(targetDirectory).Count();
-
-                        isResponsive = jpegCount > lastCount;
-                        lastCount = jpegCount;
+                        _logger.LogInformation("Trickplay process unresponsive.");
                     }
 
-                    if (!ranToCompletion)
-                    {
-                        if (!isResponsive)
-                        {
-                            _logger.LogInformation("Trickplay process unresponsive.");
-                        }
-
-                        _logger.LogInformation("Stopping trickplay extraction.");
-                        StopProcess(processWrapper, 1000);
-                    }
+                    _logger.LogInformation("Stopping trickplay extraction.");
+                    StopProcess(processWrapper, 1000);
                 }
 
                 if (!ranToCompletion || processWrapper.ExitCode != 0)
