@@ -24,6 +24,15 @@ public interface ITrickplayManager
     Task RefreshTrickplayDataAsync(Video video, bool replace, LibraryOptions libraryOptions, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Checks whether an eligible video is missing any configured trickplay resolution on disk.
+    /// Existing tiles that can be imported do not require generation.
+    /// </summary>
+    /// <param name="video">The video.</param>
+    /// <param name="libraryOptions">The library options.</param>
+    /// <returns>Whether the video needs generation.</returns>
+    bool NeedsTrickplayGeneration(Video video, LibraryOptions libraryOptions);
+
+    /// <summary>
     /// Creates trickplay tiles out of individual thumbnails.
     /// </summary>
     /// <param name="images">Ordered file paths of the thumbnails to be used.</param>

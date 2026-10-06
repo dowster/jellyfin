@@ -649,6 +649,36 @@ public partial class TrickplayManager : ITrickplayManager
         }
     }
 
+    /// <inheritdoc />
+    public bool NeedsTrickplayGeneration(Video video, LibraryOptions libraryOptions)
+    {
+        var options = _config.Configuration.TrickplayOptions;
+        if (libraryOptions is null || !libraryOptions.EnableTrickplayImageExtraction || !CanGenerateTrickplay(video, options.Interval))
+        {
+            return false;
+        }
+
+        var mediaSource = video.GetMediaSources(false).FirstOrDefault(source => Guid.Parse(source.Id).Equals(video.Id));
+        if (mediaSource is null || !File.Exists(mediaSource.Path))
+        {
+            return false;
+        }
+
+        var parentDirectory = Directory.GetParent(video.Path);
+        if (parentDirectory is not null && string.Equals(parentDirectory.Name, "backdrops", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return options.WidthResolutions.Any(width =>
+        {
+            var actualWidth = 2 * (Math.Min(width, mediaSource.VideoStream.Width ?? width) / 2);
+            var directory = GetTrickplayDirectory(video, options.TileWidth, options.TileHeight, actualWidth, libraryOptions.SaveTrickplayWithMedia);
+            // Refresh imports existing files instead of extracting new images.
+            return !Directory.Exists(directory) || !Directory.EnumerateFiles(directory).Any();
+        });
+    }
+
     private bool CanGenerateTrickplay(Video video, int interval)
     {
         var videoType = video.VideoType;

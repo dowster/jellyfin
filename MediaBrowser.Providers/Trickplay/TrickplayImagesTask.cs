@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Trickplay;
 using MediaBrowser.Model.Globalization;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
+using Prometheus;
 
 namespace MediaBrowser.Providers.Trickplay;
 
@@ -19,6 +20,9 @@ namespace MediaBrowser.Providers.Trickplay;
 public class TrickplayImagesTask : IScheduledTask
 {
     private const int QueryPageLimit = 100;
+
+    private static readonly Gauge _remaining = Metrics.CreateGauge("jellyfin_trickplay_remaining_items", "Videos still awaiting an attempt in the current trickplay task, including the active item; excludes existing tiles and resets when the task ends.");
+    private static readonly Gauge _inventoryComplete = Metrics.CreateGauge("jellyfin_trickplay_inventory_complete", "Whether the running trickplay task has finished counting videos requiring generation.");
 
     private readonly ILogger<TrickplayImagesTask> _logger;
     private readonly ILibraryManager _libraryManager;
@@ -85,35 +89,87 @@ public class TrickplayImagesTask : IScheduledTask
 
         var numberOfVideos = _libraryManager.GetCount(query);
 
-        var startIndex = 0;
-        var numComplete = 0;
-
-        while (startIndex < numberOfVideos)
+        var remaining = new HashSet<Guid>();
+        var inventoryComplete = true;
+        _remaining.Set(0);
+        _inventoryComplete.Set(0);
+        try
         {
-            query.StartIndex = startIndex;
-            var videos = _libraryManager.GetItemList(query).OfType<Video>();
-
-            foreach (var video in videos)
+            // Inventory before generation so the gauge includes unvisited library items.
+            // Keep only IDs and continue refreshing every video for discovery and cleanup.
+            for (var index = 0; index < numberOfVideos; index += QueryPageLimit)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
-                try
+                query.StartIndex = index;
+                foreach (var video in _libraryManager.GetItemList(query).OfType<Video>())
                 {
-                    var libraryOptions = _libraryManager.GetLibraryOptions(video);
-                    await _trickplayManager.RefreshTrickplayDataAsync(video, false, libraryOptions, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        if (_trickplayManager.NeedsTrickplayGeneration(video, _libraryManager.GetLibraryOptions(video)))
+                        {
+                            remaining.Add(video.Id);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error checking trickplay generation eligibility for {ItemName}", video.Name);
+                        inventoryComplete = false;
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error creating trickplay files for {ItemName}", video.Name);
-                }
-
-                numComplete++;
-                progress.Report(100d * numComplete / numberOfVideos);
             }
 
-            startIndex += QueryPageLimit;
+            _remaining.Set(remaining.Count);
+            _inventoryComplete.Set(inventoryComplete ? 1 : 0);
+            await RefreshAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _remaining.Set(0);
+            _inventoryComplete.Set(0);
         }
 
-        progress.Report(100);
+        async Task RefreshAsync()
+        {
+            var startIndex = 0;
+            var numComplete = 0;
+
+            while (startIndex < numberOfVideos)
+            {
+                query.StartIndex = startIndex;
+                var videos = _libraryManager.GetItemList(query).OfType<Video>();
+
+                foreach (var video in videos)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        var libraryOptions = _libraryManager.GetLibraryOptions(video);
+                        await _trickplayManager.RefreshTrickplayDataAsync(video, false, libraryOptions, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error creating trickplay files for {ItemName}", video.Name);
+                    }
+
+                    if (remaining.Remove(video.Id))
+                    {
+                        _remaining.Set(remaining.Count);
+                    }
+
+                    numComplete++;
+                    progress.Report(100d * numComplete / numberOfVideos);
+                }
+
+                startIndex += QueryPageLimit;
+            }
+
+            progress.Report(100);
+        }
     }
 }
