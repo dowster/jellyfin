@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -36,12 +37,12 @@ public class TrickplayImagesTaskTests
         manager.Setup(x => x.NeedsTrickplayGeneration(first, options)).Returns(true);
         manager.Setup(x => x.NeedsTrickplayGeneration(second, options)).Returns(true);
         using var cancellation = new CancellationTokenSource();
+        var samples = new List<(Video Video, string Metrics)>();
         manager.Setup(x => x.RefreshTrickplayDataAsync(It.IsAny<Video>(), false, options, It.IsAny<CancellationToken>()))
             .Returns(async (Video video, bool replace, LibraryOptions libraryOptions, CancellationToken token) =>
             {
                 var metrics = await ExportAsync();
-                Assert.Contains("jellyfin_trickplay_inventory_complete 1\n", metrics, StringComparison.Ordinal);
-                Assert.Contains($"jellyfin_trickplay_remaining_items {(video == second ? 1 : 2)}\n", metrics, StringComparison.Ordinal);
+                samples.Add((video, metrics));
                 if (video == first)
                 {
                     if (cancel)
@@ -66,6 +67,13 @@ public class TrickplayImagesTaskTests
         {
             await execution;
             manager.Verify(x => x.RefreshTrickplayDataAsync(second, false, options, It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        Assert.Equal(cancel ? 2 : 3, samples.Count);
+        foreach (var sample in samples)
+        {
+            Assert.Contains("jellyfin_trickplay_inventory_complete 1\n", sample.Metrics, StringComparison.Ordinal);
+            Assert.Contains($"jellyfin_trickplay_remaining_items {(sample.Video == second ? 1 : 2)}\n", sample.Metrics, StringComparison.Ordinal);
         }
 
         var final = await ExportAsync();
